@@ -1,0 +1,68 @@
+Metadata-Version: 2.4
+Name: brain-graph-agent
+Version: 0.1.0
+Summary: Example: graph memory (Neo4j) + orchestrator + workers + judge using OpenAI
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: openai>=1.30.0
+Requires-Dist: neo4j>=5.20.0
+Requires-Dist: pydantic>=2.7.0
+Requires-Dist: python-dotenv>=1.0.1
+Requires-Dist: typer>=0.12.0
+Requires-Dist: rich>=13.7.0
+
+# brain-graph-agent
+
+Minimal working example of:
+- **Graph memory** in **Neo4j**
+- An **orchestrator** LLM (OpenAI) that pulls a **context pack** from the graph
+- A **judge/verifier** step
+- **Write-back**: entities mentioned in the user message get stored in Neo4j with provenance.
+
+## 0) Security
+
+- Never hardcode keys.
+- Use `OPENAI_API_KEY` via environment variables.
+- If you already pasted an API key into chat/logs, **revoke it** in the OpenAI dashboard.
+
+## 1) Start Neo4j
+
+```bash
+docker compose up -d
+```
+
+Neo4j UI: http://localhost:7474 (user: `neo4j`, pass: `neo4jpassword`)
+
+## 2) Install & run (local)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+
+cp .env.example .env
+# edit .env and set OPENAI_API_KEY (or set MOCK_LLM=1 for offline test)
+
+bga init-db
+bga ask "Dhiraj wants to catch up with Jay. We use OpenClaw on WhatsApp." --source "demo:1"
+```
+
+### Offline test (no OpenAI key)
+
+```bash
+MOCK_LLM=1 bga ask "Dhiraj wants to catch up with Jay" --source "demo:mock"
+```
+
+## How it works
+
+1) **Extractor**: LLM extracts entities from input.
+2) **Graph write**: `Entity(name,type)` nodes are upserted, connected to a `Source(id)` node.
+3) **Context pack**: query Neo4j for latest entities and sources.
+4) **Worker**: LLM answers the user using only this context.
+5) **Judge**: verifies the answer doesn’t invent facts.
+
+This is the smallest end-to-end skeleton you can extend with:
+- typed nodes (Person/Project/Goal/Task)
+- vector search for long docs
+- multiple workers
+- stronger judge gates for write-back

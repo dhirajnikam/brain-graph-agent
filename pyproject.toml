@@ -1,0 +1,21 @@
+[project]
+name = "brain-graph-agent"
+version = "0.1.0"
+description = "Example: graph memory (Neo4j) + orchestrator + workers + judge using OpenAI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "openai>=1.30.0",
+  "neo4j>=5.20.0",
+  "pydantic>=2.7.0",
+  "python-dotenv>=1.0.1",
+  "typer>=0.12.0",
+  "rich>=13.7.0",
+]
+
+[project.scripts]
+bga = "bga.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
