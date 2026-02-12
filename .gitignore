@@ -6,3 +6,4 @@ __pycache__/
 neo4j_data/
 .DS_Store
 .venv/
+bga_graph.sqlite
