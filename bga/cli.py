@@ -6,6 +6,7 @@ from .settings import Settings
 from .llm import LLM
 from .graph import Graph
 from .graph_memory import MemoryGraph
+from .store_sqlite import SQLiteGraph
 from .orchestrator import Orchestrator
 
 app = typer.Typer(add_completion=False)
@@ -14,6 +15,8 @@ app = typer.Typer(add_completion=False)
 def _graph(settings: Settings):
     if settings.graph_backend == "neo4j":
         return Graph(settings)
+    if settings.graph_backend == "sqlite":
+        return SQLiteGraph(settings)
     return MemoryGraph(settings)
 
 
@@ -50,6 +53,14 @@ def ask(text: str, source: str = "cli"):
 
     print("\n[bold green]Answer:[/bold green]\n" + out["answer"])
     print("\n[bold]Judge:[/bold]\n" + out["judge"])
+
+
+@app.command()
+def serve(host: str = "127.0.0.1", port: int = 8099):
+    """Run interactive server (REST + /ui graph explorer). Requires: pip install -e .[server]"""
+    load_dotenv()
+    import uvicorn
+    uvicorn.run("bga.server:app", host=host, port=port, reload=False)
 
 
 if __name__ == "__main__":

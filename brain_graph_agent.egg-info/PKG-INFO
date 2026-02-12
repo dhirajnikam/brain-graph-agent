@@ -10,6 +10,9 @@ Requires-Dist: pydantic>=2.7.0
 Requires-Dist: python-dotenv>=1.0.1
 Requires-Dist: typer>=0.12.0
 Requires-Dist: rich>=13.7.0
+Provides-Extra: server
+Requires-Dist: fastapi>=0.110.0; extra == "server"
+Requires-Dist: uvicorn[standard]>=0.27.0; extra == "server"
 
 # brain-graph-agent
 
@@ -25,13 +28,24 @@ Minimal working example of:
 - Use `OPENAI_API_KEY` via environment variables.
 - If you already pasted an API key into chat/logs, **revoke it** in the OpenAI dashboard.
 
-## 1) Start Neo4j
+## 1) Graph backend
+
+This repo works in three modes:
+
+- **SQLite graph (default)**: persistent local graph in `./bga_graph.sqlite`.
+- **Memory graph**: no external dependencies (non-persistent).
+- **Neo4j graph**: connect to a running Neo4j over Bolt.
+
+### Neo4j (optional)
+If you have Docker installed, you can run Neo4j like this:
 
 ```bash
 docker compose up -d
 ```
 
 Neo4j UI: http://localhost:7474 (user: `neo4j`, pass: `neo4jpassword`)
+
+If you don’t have Docker, you can still run the demo with `GRAPH_BACKEND=sqlite` (default) or `GRAPH_BACKEND=memory`.
 
 ## 2) Install & run (local)
 

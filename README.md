@@ -14,9 +14,10 @@ Minimal working example of:
 
 ## 1) Graph backend
 
-This repo works in two modes:
+This repo works in three modes:
 
-- **Memory graph (default)**: no external dependencies.
+- **SQLite graph (default)**: persistent local graph in `./bga_graph.sqlite`.
+- **Memory graph**: no external dependencies (non-persistent).
 - **Neo4j graph**: connect to a running Neo4j over Bolt.
 
 ### Neo4j (optional)
@@ -28,7 +29,7 @@ docker compose up -d
 
 Neo4j UI: http://localhost:7474 (user: `neo4j`, pass: `neo4jpassword`)
 
-If you don’t have Docker, you can still run the demo with `GRAPH_BACKEND=memory`.
+If you don’t have Docker, you can still run the demo with `GRAPH_BACKEND=sqlite` (default) or `GRAPH_BACKEND=memory`.
 
 ## 2) Install & run (local)
 
@@ -43,6 +44,24 @@ cp .env.example .env
 bga init-db
 bga ask "Dhiraj wants to catch up with Jay. We use OpenClaw on WhatsApp." --source "demo:1"
 ```
+
+## 3) Interactive mode (server + UI)
+
+```bash
+pip install -e .[server]
+
+# Start API server
+MOCK_LLM=1 GRAPH_BACKEND=sqlite bga serve --host 127.0.0.1 --port 8099
+
+# Open in browser:
+# http://127.0.0.1:8099/ui
+```
+
+API endpoints:
+- `POST /ingest` → store text into the brain
+- `GET /graph` → JSON export (`nodes[]`, `edges[]`)
+- `GET /context` → latest context pack
+- `GET /health`
 
 ### Offline test (no OpenAI key)
 

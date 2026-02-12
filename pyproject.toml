@@ -19,3 +19,9 @@ bga = "bga.cli:app"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[project.optional-dependencies]
+server = [
+  "fastapi>=0.110.0",
+  "uvicorn[standard]>=0.27.0",
+]
