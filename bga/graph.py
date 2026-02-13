@@ -45,11 +45,13 @@ class Graph:
                 s.run(q, entities=list(entities), source=source)
 
     def fetch_context(self, limit: int = 20) -> str:
+        # Neo4j: when returning aggregates, ORDER BY cannot reference pre-aggregation vars.
         q = """
         MATCH (e:Entity)
         OPTIONAL MATCH (e)-[:MENTIONED_IN]->(s:Source)
-        RETURN e.name AS name, e.type AS type, collect(s.id)[0..3] AS sources
-        ORDER BY e.updatedAt DESC
+        WITH e, collect(s.id)[0..3] AS sources, e.updatedAt AS updatedAt
+        RETURN e.name AS name, e.type AS type, sources AS sources, updatedAt AS updatedAt
+        ORDER BY updatedAt DESC
         LIMIT $limit
         """
         lines = []
