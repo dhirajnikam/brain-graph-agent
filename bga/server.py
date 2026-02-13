@@ -83,6 +83,74 @@ def context(limit: int = 50):
     return {"context": STATE.graph.fetch_context(limit=limit)}
 
 
+@app.post("/retrieve")
+def retrieve(body: dict):
+    """Phase B: retrieval with full trace.
+
+    body:
+      {
+        "query": "...",
+        "current_file": "src/auth/jwt.ts" (optional),
+        "mode": "fast|balanced|thorough" (optional)
+      }
+    """
+    query = body.get("query", "")
+    current_file = body.get("current_file")
+    mode = body.get("mode", "balanced")
+    priority = body.get("priority", "quality")  # quality|cheap
+
+    intent = STATE.llm.intent(query=query, current_file=current_file)
+    hops = int(intent.get("hops", 2))
+    token_budget = int(intent.get("token_budget", 1500))
+
+    trace = {"intent": intent, "traversal": None, "selection": []}
+
+    # Optional traversal if graph backend supports it.
+    if current_file and hasattr(STATE.graph, "traverse_imports"):
+        trace["traversal"] = STATE.graph.traverse_imports(start_path=current_file, hops=hops, limit=50)
+
+        # flatten unique file paths from traversal
+        files = []
+        seen = set()
+        for path_nodes in trace["traversal"].get("paths", []):
+            for p in path_nodes[1:]:
+                if not p or p in seen:
+                    continue
+                seen.add(p)
+                files.append(p)
+
+        # Score by first-seen order (MVP). Later: centrality/recency/importance.
+        for i, f in enumerate(files[:20]):
+            score = 1.0 / (i + 1)
+            trace["selection"].append({"type": "file", "id": f, "score": score, "reason": "import-graph"})
+
+    # Always include a small memory context snapshot.
+    ctx = STATE.graph.fetch_context(limit=30)
+
+    # Build context pack within token budget (approx by chars for MVP)
+    context_pack = """CONTEXT (brain snapshot):\n""" + (ctx or "(empty)")
+    if trace["selection"]:
+        context_pack += "\n\nRELATED FILES (from graph traversal):\n" + "\n".join([f"- {x['id']} (score={x['score']:.2f})" for x in trace["selection"]])
+
+    # Model routing (simple mapping)
+    model = "gpt-5.1"
+    if mode == "fast" and priority == "cheap":
+        model = "gpt-5-mini"
+    elif mode == "fast" and priority == "quality":
+        model = "gpt-5.1"
+    elif mode == "thorough" and priority == "quality":
+        model = "gpt-5.2-codex"
+
+    return {
+        "mode": mode,
+        "priority": priority,
+        "model": model,
+        "token_budget": token_budget,
+        "trace": trace,
+        "context_pack": context_pack,
+    }
+
+
 @app.get("/graph")
 def graph(limit_nodes: int = 1000):
     if hasattr(STATE.graph, "export_graph"):

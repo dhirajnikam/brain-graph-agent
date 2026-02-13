@@ -11,6 +11,31 @@ from .settings import Settings
 class Graph:
     settings: Settings
 
+    def traverse_imports(self, *, start_path: str, hops: int = 2, limit: int = 30) -> dict:
+        """Traverse File IMPORTS graph (if present). Returns trace for transparency."""
+        q = """
+        MATCH (start:File {path: $path})
+        CALL {
+          WITH start
+          MATCH p=(start)-[:IMPORTS*1..$hops]->(f:File)
+          RETURN p
+          LIMIT $limit
+        }
+        RETURN p
+        """
+        trace = {"start": start_path, "hops": hops, "paths": []}
+        with self.driver() as drv:
+            with drv.session() as s:
+                try:
+                    for r in s.run(q, path=start_path, hops=hops, limit=limit):
+                        p = r["p"]
+                        nodes = [n.get("path") for n in p.nodes]
+                        trace["paths"].append(nodes)
+                except Exception:
+                    # If File label doesn't exist yet, treat as empty.
+                    return trace
+        return trace
+
     def driver(self):
         return GraphDatabase.driver(
             self.settings.neo4j_uri,

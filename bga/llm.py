@@ -85,6 +85,41 @@ class LLM:
             uniq.append(e)
         return uniq
 
+    def intent(self, *, query: str, current_file: str | None = None) -> dict[str, Any]:
+        """Return a structured intent analysis for retrieval routing."""
+        if self.settings.mock_llm:
+            # Simple deterministic mock
+            return {
+                "action": "code_change" if any(w in query.lower() for w in ["add", "fix", "refactor", "implement"]) else "question",
+                "domains": ["general"],
+                "risk": "low",
+                "hops": 2,
+                "token_budget": 1500,
+                "current_file": current_file,
+            }
+
+        system = (
+            "You are an intent classifier for an AI code editor brain. "
+            "Return STRICT JSON with keys: action (question|code_change|refactor|debug), "
+            "domains (array of strings), risk (low|medium|high), hops (int 1-3), token_budget (int)."
+        )
+        user = {"query": query, "current_file": current_file}
+
+        from openai import OpenAI
+        client = OpenAI(api_key=self.settings.openai_api_key)
+        resp = client.chat.completions.create(
+            model=self.settings.openai_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": str(user)},
+            ],
+            temperature=0,
+            response_format={"type": "json_object"},
+        )
+        import json
+        content = resp.choices[0].message.content or "{}"
+        return json.loads(content)
+
     def judge(self, *, goal: str, answer: str, context: str) -> str:
         if self.settings.mock_llm:
             return self._mock("judge", "judge", {"goal": goal, "answer": answer, "context": context})
