@@ -116,6 +116,8 @@ def event(body: dict):
             }
             for e in out["edges"]
         ]
+        if hasattr(STATE.graph, "resolve_conflicts"):
+            nodes, edges = STATE.graph.resolve_conflicts(nodes=nodes, edges=edges)
         STATE.graph.upsert_brain_nodes_edges(nodes=nodes, edges=edges)
 
     return {

@@ -60,8 +60,26 @@ class Graph:
             with drv.session() as s:
                 s.run(q, entities=list(entities), source=source)
 
-    def fetch_context(self, limit: int = 20) -> str:
-        q = """
+    def fetch_context(self, limit: int = 30) -> str:
+        """Return a compact, human-readable context snapshot.
+
+        Prefers Phase C BrainNodes; falls back to legacy Entity nodes.
+        """
+        q_brain = """
+        MATCH (n:BrainNode)
+        WHERE coalesce(n.archived,false) = false AND n.label <> 'Source'
+        OPTIONAL MATCH (n)-[:MENTIONED_IN]->(s:Source)
+        WITH n, collect(s.id)[0..3] AS sources, n.updatedAt AS updatedAt
+        RETURN n.label AS label,
+               coalesce(n.name, n.path, n.what, n.hash, n.id) AS title,
+               coalesce(n.why, n.reason, '') AS detail,
+               sources AS sources,
+               updatedAt AS updatedAt
+        ORDER BY updatedAt DESC
+        LIMIT $limit
+        """
+
+        q_legacy = """
         MATCH (e:Entity)
         OPTIONAL MATCH (e)-[:MENTIONED_IN]->(s:Source)
         WITH e, collect(s.id)[0..3] AS sources, e.updatedAt AS updatedAt
@@ -69,15 +87,115 @@ class Graph:
         ORDER BY updatedAt DESC
         LIMIT $limit
         """
-        lines = []
+
+        lines: list[str] = []
         with self.driver() as drv:
             with drv.session() as s:
-                for r in s.run(q, limit=limit):
+                brain = [dict(r) for r in s.run(q_brain, limit=limit)]
+                if brain:
+                    for r in brain:
+                        srcs = ", ".join(r.get("sources") or [])
+                        detail = (r.get("detail") or "").strip()
+                        tail = (f" — {detail}" if detail else "")
+                        lines.append(f"- [{r['label']}] {r['title']}{tail}" + (f" [src: {srcs}]" if srcs else ""))
+                    return "\n".join(lines)
+
+                for r in s.run(q_legacy, limit=limit):
                     srcs = ", ".join(r["sources"]) if r["sources"] else ""
                     lines.append(f"- {r['name']} ({r['type']})" + (f" [src: {srcs}]" if srcs else ""))
+
         return "\n".join(lines)
 
     # ---- Phase B/C BrainNode storage ----
+
+    def resolve_conflicts(self, *, nodes: list[dict], edges: list[dict]) -> tuple[list[dict], list[dict]]:
+        """If an incoming node conflicts with an existing node, version it and link EVOLVED_FROM.
+
+        MVP rule:
+        - If same id exists and key fields differ, create a new id with ::rev:<ms>
+        - Add REL edge (EVOLVED_FROM) new -> old
+        """
+        import time
+
+        ids = [n["id"] for n in nodes]
+        if not ids:
+            return nodes, edges
+
+        existing: dict[str, dict] = {}
+        q = """
+        UNWIND $ids AS id
+        MATCH (n:BrainNode {id: id})
+        RETURN n.id AS id, properties(n) AS props
+        """
+        with self.driver() as drv:
+            with drv.session() as s:
+                for r in s.run(q, ids=ids):
+                    existing[r["id"]] = r["props"]
+
+        def key_fields(label: str) -> list[str]:
+            return {
+                "Decision": ["what", "why"],
+                "Preference": ["name", "category"],
+                "Pattern": ["name", "type"],
+                "NegativeSignal": ["kind", "hash", "reason"],
+                "Commit": ["hash", "message"],
+                "File": ["path"],
+            }.get(label, ["name", "path", "what"])
+
+        id_map: dict[str, str] = {}
+        new_nodes = []
+        new_edges = list(edges)
+
+        for n in nodes:
+            oid = n["id"]
+            ex = existing.get(oid)
+            if not ex:
+                new_nodes.append(n)
+                continue
+
+            label = n.get("label")
+            keys = key_fields(label)
+            conflict = False
+            for k in keys:
+                nv = (n.get("props") or {}).get(k)
+                ev = ex.get(k)
+                if nv is None:
+                    continue
+                if ev is None:
+                    continue
+                if str(nv).strip() != str(ev).strip():
+                    conflict = True
+                    break
+
+            if not conflict:
+                new_nodes.append(n)
+                continue
+
+            rev = int(time.time() * 1000)
+            nid = f"{oid}::rev:{rev}"
+            id_map[oid] = nid
+            n2 = {**n, "id": nid, "props": {**(n.get("props") or {}), "base_id": oid}}
+            new_nodes.append(n2)
+            new_edges.append({
+                "id": f"{nid}::EVOLVED_FROM::{oid}",
+                "src": nid,
+                "rel": "EVOLVED_FROM",
+                "dst": oid,
+                "props": {"reason": "conflict_detected"},
+                "source": n.get("source", "api"),
+            })
+
+        if id_map:
+            # rewrite edges to point at new node ids
+            rew = []
+            for e in new_edges:
+                src = id_map.get(e.get("src"), e.get("src"))
+                dst = id_map.get(e.get("dst"), e.get("dst"))
+                e2 = {**e, "src": src, "dst": dst, "id": f"{src}::{e.get('rel')}::{dst}"}
+                rew.append(e2)
+            new_edges = rew
+
+        return new_nodes, new_edges
 
     def upsert_brain_nodes_edges(self, *, nodes: list[dict], edges: list[dict]) -> None:
         """Upsert normalized nodes/edges into Neo4j with provenance."""
@@ -123,6 +241,28 @@ class Graph:
                 s.run(q_nodes, nodes=nodes)
                 s.run(q_edges, edges=edges)
                 s.run(q_edges_real, edges=edges)
+
+                # Mirror File nodes into (:File {path}) for Phase A traversal compatibility.
+                q_file_nodes = """
+                UNWIND $nodes AS n
+                WITH n WHERE n.label = 'File' AND n.props.path IS NOT NULL
+                MERGE (f:File {path: n.props.path})
+                SET f.updatedAt = timestamp()
+                """
+                s.run(q_file_nodes, nodes=nodes)
+
+                q_file_imports = """
+                UNWIND $edges AS e
+                WITH e WHERE e.rel = 'IMPORTS'
+                MATCH (a:BrainNode {id: e.src})
+                MATCH (b:BrainNode {id: e.dst})
+                WITH a,b
+                WHERE a.path IS NOT NULL AND b.path IS NOT NULL
+                MERGE (fa:File {path: a.path})
+                MERGE (fb:File {path: b.path})
+                MERGE (fa)-[:IMPORTS]->(fb)
+                """
+                s.run(q_file_imports, edges=edges)
 
     def export_brain(self, limit_nodes: int = 1000) -> dict:
         qn = """
