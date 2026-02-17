@@ -58,9 +58,12 @@ MOCK_LLM=1 GRAPH_BACKEND=sqlite bga serve --host 127.0.0.1 --port 8099
 ```
 
 API endpoints:
-- `POST /ingest` → store text into the brain
+- `POST /ingest` → legacy text ingest (backwards compatible)
+- `POST /event` → Phase C ENRICH structured ingest
+  - body: `{ "type": "text|decision|preference|pattern|git_commit|revert|code_index", "source": "...", "payload": { ... } }`
+- `POST /housekeep` → Phase C decay + importance scoring + archive
 - `GET /graph` → JSON export (`nodes[]`, `edges[]`)
-- `GET /context` → latest context pack
+- `GET /context` → latest context snapshot
 - `GET /health`
 
 ### Offline test (no OpenAI key)
