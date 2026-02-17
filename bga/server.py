@@ -146,16 +146,23 @@ def event(body: dict):
 
 @app.post("/housekeep")
 def housekeep(body: dict | None = None):
-    """Phase C: minimal housekeeping.
+    """Phase C: housekeeping + optional consolidation.
 
-    Current MVP:
-    - mark low-confidence or old nodes as archived
+    body (optional):
+      {"consolidate": true}
+
+    Actions:
+    - compute decay + importance
+    - archive low-value nodes
+    - optional: create Summary nodes for archived clusters (no hard deletes)
     """
+    body = body or {}
+    consolidate = bool(body.get("consolidate", False))
+
     if not hasattr(STATE.graph, "driver"):
         return {"ok": False, "error": "backend_not_supported"}
 
-    # simple decay/archive on BrainNode
-    q = """
+    q_score = """
     MATCH (n:BrainNode)
     OPTIONAL MATCH (n)--(m)
     WITH n,
@@ -175,7 +182,6 @@ def housekeep(body: dict | None = None):
 
     SET n.decay = decay
 
-    // importance (simple normalized proxy)
     SET n.importance = (
       0.25 * decay +
       0.20 * (CASE WHEN access_count > 0 THEN 1.0 ELSE 0.2 END) +
@@ -185,6 +191,7 @@ def housekeep(body: dict | None = None):
     )
 
     SET n.archived = CASE
+      WHEN n.label = 'Source' THEN false
       WHEN confidence < 0.2 THEN true
       WHEN ageDays > 180 THEN true
       WHEN n.importance < 0.15 THEN true
@@ -193,15 +200,64 @@ def housekeep(body: dict | None = None):
 
     RETURN count(n) AS updated
     """
+
+    q_consolidate = """
+    // Create one Summary per (label, month) for archived nodes.
+    MATCH (n:BrainNode)
+    WHERE coalesce(n.archived,false) = true AND n.label <> 'Source'
+    WITH n,
+         n.label AS label,
+         toString(date(datetime({epochMillis: coalesce(n.updatedAt, timestamp())}))) AS d
+    WITH n, label, substring(d, 0, 7) AS ym
+    WITH label, ym, collect(n)[0..200] AS nodes
+
+    WITH label, ym, nodes,
+         [x IN nodes | coalesce(x.name, x.path, x.what, x.hash, x.id)][0..10] AS samples,
+         size(nodes) AS cnt
+
+    MERGE (s:BrainNode {id: 'summary:' + label + ':' + ym})
+    SET s.label = 'Summary',
+        s.type = label,
+        s.ym = ym,
+        s.count = cnt,
+        s.samples = samples,
+        s.updatedAt = timestamp(),
+        s.archived = false,
+        s.importance = 0.25
+
+    WITH s, nodes
+    UNWIND nodes AS n
+    MERGE (s)-[:SUMMARIZES]->(n)
+
+    RETURN count(s) AS summaries
+    """
+
     with STATE.graph.driver() as drv:
         with drv.session() as s:
-            updated = s.run(q).single()["updated"]
-    return {"ok": True, "updated": updated}
+            updated = s.run(q_score).single()["updated"]
+            summaries = 0
+            if consolidate:
+                summaries = s.run(q_consolidate).single()["summaries"]
+
+    return {"ok": True, "updated": updated, "consolidated": consolidate, "summaries": summaries}
 
 
 @app.get("/context")
 def context(limit: int = 50):
     return {"context": STATE.graph.fetch_context(limit=limit)}
+
+
+@app.post("/policy")
+def policy(body: dict):
+    """Phase C upgrade: policy check for a proposed plan.
+
+    body: {"plan": "..."}
+    """
+    from .policy import warnings_for_plan
+
+    plan = body.get("plan", "")
+    warns = warnings_for_plan(graph=STATE.graph, plan=plan)
+    return {"ok": True, "warnings": [w.__dict__ for w in warns]}
 
 
 @app.post("/retrieve")
@@ -248,8 +304,28 @@ def retrieve(body: dict):
     # Always include a small memory context snapshot.
     ctx = STATE.graph.fetch_context(limit=30)
 
+    # Add negative-learning signals (Phase C upgrade)
+    neg_lines = []
+    if hasattr(STATE.graph, "driver"):
+        qneg = """
+        MATCH (n:BrainNode)
+        WHERE n.label='NegativeSignal' AND coalesce(n.archived,false)=false
+        RETURN coalesce(n.reason,'') AS reason, coalesce(n.hash,'') AS hash
+        ORDER BY coalesce(n.updatedAt,0) DESC
+        LIMIT 10
+        """
+        with STATE.graph.driver() as drv:
+            with drv.session() as s:
+                for r in s.run(qneg):
+                    reason = (r["reason"] or "").strip()
+                    h = (r["hash"] or "").strip()
+                    if reason or h:
+                        neg_lines.append(f"- {reason}" + (f" (commit {h})" if h else ""))
+
     # Build context pack within token budget (approx by chars for MVP)
     context_pack = """CONTEXT (brain snapshot):\n""" + (ctx or "(empty)")
+    if neg_lines:
+        context_pack += "\n\nNEGATIVE LEARNINGS (avoid repeating):\n" + "\n".join(neg_lines)
     if trace["selection"]:
         context_pack += "\n\nRELATED FILES (from graph traversal):\n" + "\n".join([f"- {x['id']} (score={x['score']:.2f})" for x in trace["selection"]])
 

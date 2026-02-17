@@ -62,9 +62,18 @@ API endpoints:
 - `POST /event` → Phase C ENRICH structured ingest
   - body: `{ "type": "text|decision|preference|pattern|git_commit|revert|code_index", "source": "...", "payload": { ... } }`
 - `POST /housekeep` → Phase C decay + importance scoring + archive
+  - body (optional): `{ "consolidate": true }` (creates Summary nodes, no deletes)
+- `POST /policy` → Phase C upgrade: checks a proposed plan against negative-learning signals
+  - body: `{ "plan": "..." }`
 - `GET /graph` → JSON export (`nodes[]`, `edges[]`)
 - `GET /context` → latest context snapshot
 - `GET /health`
+
+### Optional: automatic housekeeping (systemd timer)
+
+Unit files included at `deploy/systemd/`:
+- `brain-graph-agent-housekeep.service`
+- `brain-graph-agent-housekeep.timer`
 
 ### Offline test (no OpenAI key)
 

@@ -1,0 +1,6 @@
+[Unit]
+Description=brain-graph-agent housekeeping (Phase C)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/curl -s -X POST http://127.0.0.1:8099/housekeep -H 'content-type: application/json' -d '{"consolidate": true}'
