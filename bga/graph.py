@@ -292,14 +292,16 @@ class Graph:
 
     def traverse_imports(self, *, start_path: str, hops: int = 2, limit: int = 30) -> dict:
         # NOTE: depends on File nodes/IMPORTS rels (Phase A). If absent, returns empty.
-        q = """
-        MATCH (start:File {path: $path})
-        CALL {
+        # Neo4j does not allow parameters inside variable-length patterns; embed hops.
+        hops_i = max(1, int(hops))
+        q = f"""
+        MATCH (start:File {{path: $path}})
+        CALL {{
           WITH start
-          MATCH p=(start)-[:IMPORTS*1..$hops]->(f:File)
+          MATCH p=(start)-[:IMPORTS*1..{hops_i}]->(f:File)
           RETURN p
           LIMIT $limit
-        }
+        }}
         RETURN p
         """
         trace = {"start": start_path, "hops": hops, "paths": []}
