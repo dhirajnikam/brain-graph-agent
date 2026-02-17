@@ -116,6 +116,20 @@ def event(body: dict):
             }
             for e in out["edges"]
         ]
+        # C (Connect): link nodes co-occurring in the same event to preserve locality.
+        node_ids = [n["id"] for n in nodes if n.get("label") != "Source"]
+        for i in range(min(len(node_ids), 20)):
+            for j in range(i + 1, min(len(node_ids), 20)):
+                a, b = node_ids[i], node_ids[j]
+                edges.append({
+                    "id": f"{a}::RELATED_TO::{b}",
+                    "src": a,
+                    "rel": "RELATED_TO",
+                    "dst": b,
+                    "props": {"reason": "co_occurrence"},
+                    "source": source,
+                })
+
         if hasattr(STATE.graph, "resolve_conflicts"):
             nodes, edges = STATE.graph.resolve_conflicts(nodes=nodes, edges=edges)
         STATE.graph.upsert_brain_nodes_edges(nodes=nodes, edges=edges)
