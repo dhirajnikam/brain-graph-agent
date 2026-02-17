@@ -67,15 +67,99 @@ def health():
 
 @app.post("/ingest")
 def ingest(body: dict):
-    """Ingest a message/event into the brain.
-
-    body:
-      {"text": "...", "source": "..."}
-    """
+    """Ingest raw text into the legacy orchestrator (kept for backwards compatibility)."""
     text = body.get("text", "")
     source = body.get("source", "api")
     out = STATE.orch.handle(text, source=source)
     return out
+
+
+@app.post("/event")
+def event(body: dict):
+    """Phase C: Structured ENRICH ingestion.
+
+    body:
+      {
+        "type": "text|decision|preference|pattern|git_commit|revert|code_index",
+        "source": "...",
+        "payload": { ... }
+      }
+    """
+    from .enrich.pipeline import enrich
+
+    etype = body.get("type", "text")
+    source = body.get("source", "api")
+    payload = body.get("payload", {})
+
+    out = enrich(llm=STATE.llm, event_type=etype, payload=payload, source=source)
+
+    # write to graph if supported
+    if hasattr(STATE.graph, "upsert_brain_nodes_edges"):
+        nodes = [
+            {
+                "label": n.label,
+                "id": n.id,
+                "props": {**n.props, "confidence": n.confidence, "source": n.source},
+                "confidence": n.confidence,
+                "source": n.source,
+            }
+            for n in out["nodes"]
+        ]
+        edges = [
+            {
+                "id": f"{e.src}::{e.rel}::{e.dst}",
+                "src": e.src,
+                "rel": e.rel,
+                "dst": e.dst,
+                "props": e.props,
+                "source": e.source,
+            }
+            for e in out["edges"]
+        ]
+        STATE.graph.upsert_brain_nodes_edges(nodes=nodes, edges=edges)
+
+    return {
+        "ok": True,
+        "type": etype,
+        "source": source,
+        "facts": [f.__dict__ for f in out["facts"]],
+        "nodes": [n.__dict__ for n in out["nodes"]],
+        "edges": [e.__dict__ for e in out["edges"]],
+    }
+
+
+@app.post("/housekeep")
+def housekeep(body: dict | None = None):
+    """Phase C: minimal housekeeping.
+
+    Current MVP:
+    - mark low-confidence or old nodes as archived
+    """
+    if not hasattr(STATE.graph, "driver"):
+        return {"ok": False, "error": "backend_not_supported"}
+
+    # simple decay/archive on BrainNode
+    q = """
+    MATCH (n:BrainNode)
+    WITH n,
+         (timestamp() - coalesce(n.updatedAt, timestamp())) / 86400000.0 AS ageDays
+    SET n.decay = CASE
+      WHEN ageDays > 90 THEN 0.30
+      WHEN ageDays > 30 THEN 0.50
+      WHEN ageDays > 7 THEN 0.80
+      ELSE 0.95
+    END
+    SET n.archived = CASE
+      WHEN coalesce(n.confidence, 1.0) < 0.2 THEN true
+      WHEN ageDays > 180 THEN true
+      ELSE false
+    END
+    RETURN count(n) AS updated
+    """
+    with STATE.graph.driver() as drv:
+        with drv.session() as s:
+            updated = s.run(q).single()["updated"]
+    return {"ok": True, "updated": updated}
 
 
 @app.get("/context")
@@ -153,6 +237,9 @@ def retrieve(body: dict):
 
 @app.get("/graph")
 def graph(limit_nodes: int = 1000):
+    # Prefer Phase C brain export when available
+    if hasattr(STATE.graph, "export_brain"):
+        return STATE.graph.export_brain(limit_nodes=limit_nodes)
     if hasattr(STATE.graph, "export_graph"):
         return STATE.graph.export_graph(limit_nodes=limit_nodes)
     return JSONResponse(
