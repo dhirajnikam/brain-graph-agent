@@ -141,19 +141,40 @@ def housekeep(body: dict | None = None):
     # simple decay/archive on BrainNode
     q = """
     MATCH (n:BrainNode)
+    OPTIONAL MATCH (n)--(m)
     WITH n,
+         count(m) AS degree,
          (timestamp() - coalesce(n.updatedAt, timestamp())) / 86400000.0 AS ageDays
-    SET n.decay = CASE
-      WHEN ageDays > 90 THEN 0.30
-      WHEN ageDays > 30 THEN 0.50
-      WHEN ageDays > 7 THEN 0.80
-      ELSE 0.95
-    END
+
+    WITH n, degree, ageDays,
+         CASE
+           WHEN ageDays > 90 THEN 0.30
+           WHEN ageDays > 30 THEN 0.50
+           WHEN ageDays > 7 THEN 0.80
+           ELSE 0.95
+         END AS decay,
+         coalesce(n.confidence, 0.5) AS confidence,
+         coalesce(n.access_count, 0) AS access_count,
+         coalesce(n.user_signal, 0.0) AS user_signal
+
+    SET n.decay = decay
+
+    // importance (simple normalized proxy)
+    SET n.importance = (
+      0.25 * decay +
+      0.20 * (CASE WHEN access_count > 0 THEN 1.0 ELSE 0.2 END) +
+      0.20 * (CASE WHEN degree > 5 THEN 1.0 WHEN degree > 0 THEN 0.6 ELSE 0.2 END) +
+      0.15 * confidence +
+      0.20 * (CASE WHEN user_signal > 0 THEN 1.0 ELSE 0.2 END)
+    )
+
     SET n.archived = CASE
-      WHEN coalesce(n.confidence, 1.0) < 0.2 THEN true
+      WHEN confidence < 0.2 THEN true
       WHEN ageDays > 180 THEN true
+      WHEN n.importance < 0.15 THEN true
       ELSE false
     END
+
     RETURN count(n) AS updated
     """
     with STATE.graph.driver() as drv:

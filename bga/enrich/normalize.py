@@ -119,6 +119,23 @@ def normalize_facts(*, facts: list[Fact], source: str) -> tuple[list[NormalizedN
                 nodes.append(NormalizedNode("NegativeSignal", nid, {"kind": "revert", "hash": h, "reason": v.get("reason")}, 1.0, source))
                 edges.append(NormalizedEdge(nid, "ABOUT", cid, {}, source))
 
+    # Always create a Source node and link created nodes to it (provenance).
+    sid = f"source:{source}"
+    nodes.append(
+        NormalizedNode(
+            label="Source",
+            id=sid,
+            props={"id": source},
+            confidence=1.0,
+            source=source,
+        )
+    )
+    for n in list(nodes):
+        if n.id == sid:
+            continue
+        # connect everything to Source for traceability
+        edges.append(NormalizedEdge(src=n.id, rel="MENTIONED_IN", dst=sid, props={}, source=source))
+
     # De-dupe nodes by (label,id) keeping latest props merged
     merged: dict[tuple[str, str], NormalizedNode] = {}
     for n in nodes:
@@ -129,4 +146,14 @@ def normalize_facts(*, facts: list[Fact], source: str) -> tuple[list[NormalizedN
             merged[key].props.update({k: v for k, v in n.props.items() if v is not None})
             merged[key].confidence = max(merged[key].confidence, n.confidence)
 
-    return list(merged.values()), edges
+    # De-dupe edges
+    e_seen = set()
+    uniq_edges: list[NormalizedEdge] = []
+    for e in edges:
+        k = (e.src, e.rel, e.dst)
+        if k in e_seen:
+            continue
+        e_seen.add(k)
+        uniq_edges.append(e)
+
+    return list(merged.values()), uniq_edges
