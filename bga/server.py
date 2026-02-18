@@ -442,3 +442,131 @@ def ui():
 </html>
 """
     return HTMLResponse(html)
+
+
+@app.get("/chat", response_class=HTMLResponse)
+def chat_page():
+    html = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>brain-graph-agent Chat</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 0; }
+    #top { display:flex; gap: 8px; padding: 10px; border-bottom: 1px solid #ddd; align-items:center; }
+    input, button, select { padding: 8px; }
+    #wrap { display:flex; height: calc(100vh - 60px); }
+    #chat { flex: 2; padding: 10px; overflow:auto; }
+    #trace { flex: 1; border-left: 1px solid #ddd; padding: 10px; overflow:auto; white-space: pre-wrap; font-size: 12px; }
+    .msg { margin-bottom: 12px; }
+    .role { font-size: 12px; color: #666; }
+    .bubble { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="top">
+    <input id="q" placeholder="Ask the brain..." style="flex:1" />
+    <input id="current" placeholder="current_file (optional)" style="width: 220px" />
+    <select id="mode">
+      <option value="fast">fast</option>
+      <option value="balanced" selected>balanced</option>
+      <option value="thorough">thorough</option>
+    </select>
+    <select id="priority">
+      <option value="cheap">cheap</option>
+      <option value="quality" selected>quality</option>
+    </select>
+    <button onclick="send()">Send</button>
+    <span id="status" style="font-size:12px;color:#555"></span>
+  </div>
+
+  <div id="wrap">
+    <div id="chat"></div>
+    <div id="trace">Trace will appear here.</div>
+  </div>
+
+<script>
+  const chatEl = document.getElementById('chat');
+  const traceEl = document.getElementById('trace');
+  const statusEl = document.getElementById('status');
+
+  function add(role, text) {
+    const d = document.createElement('div');
+    d.className = 'msg';
+    d.innerHTML = `<div class="role">${role}</div><div class="bubble"></div>`;
+    d.querySelector('.bubble').textContent = text;
+    chatEl.appendChild(d);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  async function send() {
+    const q = document.getElementById('q').value.trim();
+    const current_file = document.getElementById('current').value.trim();
+    const mode = document.getElementById('mode').value;
+    const priority = document.getElementById('priority').value;
+    if (!q) return;
+
+    add('user', q);
+    document.getElementById('q').value = '';
+
+    statusEl.textContent = 'Working...';
+    try {
+      const out = await fetch('/chat_api', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ query: q, current_file: current_file || null, mode, priority })
+      }).then(r => r.json());
+
+      if (!out.ok) {
+        add('assistant', 'ERROR: ' + (out.error || 'unknown'));
+      } else {
+        add('assistant', out.answer || '(empty)');
+      }
+      traceEl.textContent = JSON.stringify(out, null, 2);
+    } catch (e) {
+      add('assistant', 'ERROR: ' + String(e));
+    } finally {
+      statusEl.textContent = '';
+    }
+  }
+
+  document.getElementById('q').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') send();
+  });
+</script>
+</body>
+</html>
+"""
+    return HTMLResponse(html)
+
+
+@app.post("/chat_api")
+def chat_api(body: dict):
+    """Hosted chat endpoint.
+
+    body: { query, current_file?, mode?, priority? }
+
+    Uses Phase B retrieve() to build a context_pack and then calls the worker LLM.
+    """
+    try:
+        query = body.get("query", "")
+        current_file = body.get("current_file")
+        mode = body.get("mode", "balanced")
+        priority = body.get("priority", "quality")
+
+        ret = retrieve({"query": query, "current_file": current_file, "mode": mode, "priority": priority})
+
+        system = (
+            "You are the AI brain assistant. Use the provided CONTEXT_PACK. "
+            "Be concise and helpful. Do not invent facts not in the context; if missing, ask one question."
+        )
+        user = f"QUERY:\n{query}\n\nCONTEXT_PACK:\n{ret.get('context_pack','')}\n"
+
+        answer = STATE.llm.chat(system=system, user=user)
+        judge = STATE.llm.judge(goal="Answer the query using only context_pack.", answer=answer, context=ret.get("context_pack", ""))
+
+        return {"ok": True, **ret, "answer": answer, "judge": judge}
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": str(e)})
